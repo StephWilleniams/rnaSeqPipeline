@@ -1,0 +1,69 @@
+---------------------------------------------------------
+RNA-Seq Pipeline .gitignore
+---------------------------------------------------------
+
+1. Raw Data and Output Directories
+
+Ignore the specific directories where we store data and outputs
+
+c_sparklecode/
+d_data/
+o_outputs/
+n_notes/
+
+2. Sequence Files
+
+Ignore all raw and intermediate sequence files
+
+*.fastq
+*.fq
+*.fastq.gz
+*.fq.gz
+*.gz
+
+3. Alignment Files
+
+BAM files are massive binary files and should never be committed
+
+*.bam
+*.bai
+*.bam.bai
+*.sam
+
+4. STAR Alignment Intermediates & Logs
+
+Ignore STAR's highly verbose output logs and temporary folders
+
+*Log.final.out
+*Log.out
+*Log.progress.out
+*SJ.out.tab
+*_STARgenome/
+*_STARpass1/
+*_STARtmp/
+
+5. Quality Control Reports & Logs
+
+Ignore HTML/JSON reports from fastp and run logs from umi_tools
+
+*.html
+*.json
+*.log
+dedup_stats
+
+6. Count Matrices
+
+Depending on the number of samples, these can get large
+
+gene_counts.txt
+gene_counts.txt.summary
+
+7. OS Generated Files (Mac/Linux)
+
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
