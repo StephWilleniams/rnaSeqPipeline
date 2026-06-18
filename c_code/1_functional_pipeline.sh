@@ -9,20 +9,31 @@
 ## For now, these can be uncommented and adapted as needed for additional processing of internal reads.
 ## At some point I may rewrite the code to be a bit more flexible and have this as an toggle.
 
+# --- ARGUMENT CHECK ---
+# Check if a sample number was provided when the script was run
+if [ -z "$1" ]; then
+    echo "ERROR: No sample number provided."
+    echo "Usage: ./code.sh <sample_number>"
+    echo "Example: ./code.sh 5"
+    exit 1
+fi
+
 # --- CONFIGURATION ---
 set -e # Exit immediately if a command exits with a non-zero status
 THREADS=8 # Number of threads to use for parallel processing
 STAR_INDEX="d_data/refGenome/mouse_star_index/" # Path to STAR genome index directory
-VAR=1 # Sample identifier (e.g., 1, 2, 3) to process specific sample files
+
+# Set VAR to the first command-line argument
+VAR=$1 
 
 # --- Directory Setup ---
-R1_IN=$(ls d_data/${VAR}_*_R1_001.fastq.gz) # Input FASTQ for Read 1 (e.g., d_data/1_sample_R1_001.fastq.gz)
-R2_IN=$(ls d_data/${VAR}_*_R2_001.fastq.gz) # Input FASTQ for Read 2 (e.g., d_data/1_sample_R2_001.fastq.gz)
+R1_IN=$(ls d_data/${VAR}_*_R1_001.fastq.gz) # Input FASTQ for Read 1
+R2_IN=$(ls d_data/${VAR}_*_R2_001.fastq.gz) # Input FASTQ for Read 2
 OUT_DIR="o_outputs/sample_${VAR}" # Output directory for processed files
 mkdir -p ${OUT_DIR} # Create output directory if it doesn't exist
 
 # Set the step to skip to (e.g., SKIP=2 starts at Step 3) and the step to stop after (1-7)
-SKIP=1
+SKIP=0
 STEP=7
 
 echo ""
@@ -36,8 +47,6 @@ echo "========================================================"
 echo ""
 
 # --- STEP 1: Extract UMIs ---
-# Note: this is the original umi_tools command, which is now replaced by the C++ version. 
-# The original command is left here for reference and comparison.
 
 # INPUTS:
 # --extract-method=regex: Use regex-based UMI extraction
@@ -45,7 +54,7 @@ echo ""
 #   - (?P<discard_1>.*): Discard any leading sequence (non-greedy)
 #   - (?P<discard_2>ATTGCGCAATG){s<=2}: Match the adapter sequence with up to 2 mismatches
 #   - (?P<umi_1>.{8}): Capture the 8bp UMI sequence
-#   - (?P<discard_3>G{3,5}): Discard the trailing poly-G sequence (3 to 5 Gs)
+#   - (?P<discard_3>G{5}|G{3}): Discard the trailing poly-G sequence (5 or 3 Gs)
 # -I: Input FASTQ for Read 1
 # --read2-in: Input FASTQ for Read 2
 # -S: Output FASTQ for extracted Read 1
@@ -66,7 +75,7 @@ echo ""
 #     echo ""
 #     umi_tools extract \
 #           --extract-method=regex \
-#           --bc-pattern="(?P<discard_1>.*)(?P<discard_2>ATTGCGCAATG){s<=2}(?P<umi_1>.{8})(?P<discard_3>G{3,5})" \
+#           --bc-pattern="(?P<discard_1>.{0,10})(?P<discard_2>ATTGCGCAATG){s<=2}(?P<umi_1>.{8})(?P<discard_3>G{5}|G{3})" \
 #           -I ${R1_IN} \
 #           --read2-in=${R2_IN} \
 #           -S ${OUT_DIR}/extracted_R1.fastq.gz \
@@ -92,10 +101,17 @@ echo ""
 # -i: Output FASTQ for discarded internal reads for Read 1
 # -I: Output FASTQ for discarded internal reads for Read 2
 
+# OUTPUTS:
+# - ${OUT_DIR}/extracted_R1.fastq.gz: FASTQ with extracted UMIs for Read 1
+# - ${OUT_DIR}/extracted_R2.fastq.gz: FASTQ with extracted UMIs for Read 2
+# - ${OUT_DIR}/internal_R1.fastq.gz: FASTQ with discarded internal reads for Read 1
+# - ${OUT_DIR}/internal_R2.fastq.gz: FASTQ with discarded internal reads for Read 2
+# - ${OUT_DIR}/cumi_progress.log: Log file for umi extraction progress and statistics
+
 if [[ "$SKIP" -lt 1 ]]; then
     echo "Step 1: Running umi extraction..."
     echo ""
-    ./cumi_tools -r ${R1_IN} \
+    ./c_code/cumi_tools -r ${R1_IN} \
                  -R ${R2_IN} \
                  -o ${OUT_DIR}/extracted_R1.fastq.gz \
                  -O ${OUT_DIR}/extracted_R2.fastq.gz \
@@ -213,6 +229,8 @@ else
 fi
 
 # --- STEP 5: Deduplication ---
+
+# Possible change: https://peerj.com/articles/8275/
 
 # INPUTS:
 # -I: Input BAM file with aligned reads sorted by coordinate
