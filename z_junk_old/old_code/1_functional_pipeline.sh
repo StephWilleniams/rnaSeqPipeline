@@ -1,20 +1,15 @@
 #!/bin/bash
 
-### Title: RNA-Seq functional pipeline
+### Title: RNA-Seq Pipeline 
 ### Authors: Emily Skates, Stephen Williams
 ## This script implements a full RNA-Seq processing workflow for Takara SMART-Seq data, including trimming, UMI extraction, alignment, deduplication, and gene (feature) counting. 
 ## The file `bioqc_environment.yml` should be used to set up the conda environment with all necessary tools (umi_tools, fastp, STAR, samtools, featureCounts, etc.).
 
-# Note: Star alignment can be problematic, particularly the release version available through bioconda.
-# To overcome this issue we use version 2.10.7b, which is not available through normal bioconda.
-# To get it run the following command:
-# CONDA_SUBDIR=osx-64 mamba install -y bioconda::star=2.7.10b
-# This version can then cause environment issues, which prevent the use of other tools. Run:
-# conda clean --all -y
-# conda remove --force star -y
-# Temporarily handle other environment issue and then re-install star if this problem occurs.
+## Note: sections of this script are commented out, such as the internal read processing, to focus on the primary 5' UMI read workflow. 
+## For now, these can be uncommented and adapted as needed for additional processing of internal reads.
+## At some point I may rewrite the code to be a bit more flexible and have this as an toggle.
 
-# --- CHECK ARGUMENTS ---
+# --- ARGUMENT CHECK ---
 # Check if a sample number was provided when the script was run
 if [ -z "$1" ]; then
     echo "ERROR: No sample number provided."
@@ -27,15 +22,19 @@ fi
 set -e # Exit immediately if a command exits with a non-zero status
 THREADS=8 # Number of threads to use for parallel processing
 STAR_INDEX="d_data/refGenome/mouse_star_index/" # Path to STAR genome index directory
-VAR=$1 # Set VAR to the first command-line argument
-SKIP=0 # Set the step to skip to (e.g., SKIP=2 starts at Step 3)
-STEP=7 # and the step to stop after (1-7)
+
+# Set VAR to the first command-line argument
+VAR=$1 
 
 # --- Directory Setup ---
 R1_IN=$(ls d_data/${VAR}_*_R1_001.fastq.gz) # Input FASTQ for Read 1
 R2_IN=$(ls d_data/${VAR}_*_R2_001.fastq.gz) # Input FASTQ for Read 2
 OUT_DIR="o_outputs/sample_${VAR}" # Output directory for processed files
 mkdir -p ${OUT_DIR} # Create output directory if it doesn't exist
+
+# Set the step to skip to (e.g., SKIP=2 starts at Step 3) and the step to stop after (1-7)
+SKIP=0
+STEP=7
 
 echo ""
 echo "========================================================"
@@ -69,14 +68,13 @@ echo ""
 if [[ "$SKIP" -lt 1 ]]; then
     echo "Step 1: Running umi extraction..."
     echo ""
-    ./c_code/c_umi_extract -r ${R1_IN} \
+    ./c_code/c_umi_tools -r ${R1_IN} \
                  -R ${R2_IN} \
                  -o ${OUT_DIR}/extracted_R1.fastq.gz \
                  -O ${OUT_DIR}/extracted_R2.fastq.gz \
                  -L ${OUT_DIR}/c_umi_progress.log \
                  -i ${OUT_DIR}/internal_R1.fastq.gz \
                  -I ${OUT_DIR}/internal_R2.fastq.gz
-    echo ""
     if [[ "$STEP" -eq 1 ]]; then echo "Stopping after Step 1."; exit 0; fi
 else
     echo "Skipping Step 1..."
@@ -116,6 +114,15 @@ fi
 
 # --- STEP 3: Alignment (STAR) ---
 
+# Note: Star alignment can be problematic, particularly the release version available through bioconda.
+# To overcome this issue we use version 2.10.7b, which is not available through normal bioconda.
+# To get it run the following command:
+# CONDA_SUBDIR=osx-64 mamba install -y bioconda::star=2.7.10b
+# This version can then cause environment issues, which prevent the use of other tools. Run:
+# conda clean --all -y
+# conda remove --force star -y
+# Temporarily handle other environment issue and then re-install star if this problem occurs.
+
 # INPUTS:
 # --runThreadN: Number of threads to use for STAR alignment
 # --genomeDir: Path to STAR genome index directory
@@ -138,6 +145,17 @@ if [[ "$SKIP" -lt 3 ]]; then
          --readFilesCommand "gzip -d -c" \
          --outSAMtype BAM SortedByCoordinate \
          --outFileNamePrefix ${OUT_DIR}/umi_
+
+    # --- INTERNAL READS ---
+    # echo "Step 3b: Aligning Internal reads..."
+    # STAR --runThreadN ${THREADS} \
+    #      --genomeDir ${STAR_INDEX} \
+    #      --readFilesIn ${OUT_DIR}/internal_R1.fastq.gz ${OUT_DIR}/internal_R2.fastq.gz \
+    #      --readFilesCommand "gzip -d -c" \
+    #      --outSAMtype BAM SortedByCoordinate \
+    #      --outFileNamePrefix ${OUT_DIR}/internal_
+    # -----------------------
+
     if [[ "$STEP" -eq 3 ]]; then echo "Stopping after Step 3."; exit 0; fi
 else
     echo "Skipping Step 3..."
@@ -156,6 +174,11 @@ if [[ "$SKIP" -lt 4 ]]; then
     echo "Step 4: Indexing BAM files..."
     echo ""
     samtools index ${OUT_DIR}/umi_Aligned.sortedByCoord.out.bam
+
+    # --- INTERNAL READS ---
+    # samtools index ${OUT_DIR}/internal_Aligned.sortedByCoord.out.bam
+    # ----------------------
+
     if [[ "$STEP" -eq 4 ]]; then echo "Stopping after Step 4."; exit 0; fi
 else
     echo "Skipping Step 4..."
@@ -163,6 +186,8 @@ else
 fi
 
 # --- STEP 5: Deduplication ---
+
+# Possible change: https://peerj.com/articles/8275/
 
 # INPUTS:
 # --algo dir: Use directional adjacency method for UMI deduplication
@@ -178,6 +203,7 @@ fi
 if [[ "$SKIP" -lt 5 ]]; then
     echo "Step 5a: Deduplicating 5' UMI BAM..."
     echo ""
+
     export _JAVA_OPTIONS="-Xmx12g"
     umicollapse bam \
                 --algo dir \
@@ -185,6 +211,7 @@ if [[ "$SKIP" -lt 5 ]]; then
                 -o ${OUT_DIR}/umi_deduplicated.bam \
                 --paired \
                 --two-pass > ${OUT_DIR}/umicollapse_run.log 2>&1
+
     if [[ "$STEP" -eq 5 ]]; then echo "Stopping after Step 5."; exit 0; fi
 else
     echo "Skipping Step 5..."
@@ -203,6 +230,11 @@ if [[ "$SKIP" -lt 6 ]]; then
     echo "Step 6: Indexing final deduplicated BAM files..."
     echo ""
     samtools index ${OUT_DIR}/umi_deduplicated.bam
+
+    # --- INTERNAL READS ---
+    # samtools index ${OUT_DIR}/internal_deduplicated.bam
+    # ----------------------
+
     if [[ "$STEP" -eq 6 ]]; then echo "Stopping after Step 6."; exit 0; fi
 else
     echo "Skipping Step 6..."
@@ -219,10 +251,6 @@ fi
 # -g: Attribute type to group features by (e.g., gene_id)
 # -o: Output file for gene counts
 
-# OUTPUTS:
-# - ${OUT_DIR}/gene_counts.txt: Tab-delimited file with gene counts generated by featureCounts, containing columns for gene ID, gene name, and count values for the sample
-# - ${OUT_DIR}/gene_counts.txt.summary: Summary file generated by featureCounts with counting statistics and metrics
-
 if [[ "$SKIP" -lt 7 ]]; then
     echo "Step 7: Counting reads per gene with featureCounts..."
     echo ""
@@ -233,6 +261,18 @@ if [[ "$SKIP" -lt 7 ]]; then
                   -g gene_id \
                   -o ${OUT_DIR}/gene_counts.txt \
                   ${OUT_DIR}/umi_deduplicated.bam
+
+    # --- INTERNAL READS ---
+    # featureCounts -p \
+    #               -T ${THREADS} \
+    #               -a d_data/refGenome/genomic.gtf \
+    #               -t exon \
+    #               -g gene_id \
+    #               -o ${OUT_DIR}/gene_counts.txt \
+    #               ${OUT_DIR}/umi_deduplicated.bam ${OUT_DIR}/internal_deduplicated.bam
+    # ----------------------
+
+
     if [[ "$STEP" -eq 7 ]]; then echo "Stopping after Step 7."; exit 0; fi
 else
     echo "Skipping Step 7..."
@@ -242,3 +282,57 @@ fi
 echo "========================================================"
 echo "Pipeline complete! Final counts matrix generated."
 echo "========================================================"
+
+
+#--- OLD CODE FOR REFERENCE ---
+
+# --- STEP 1: Extract UMIs ---
+
+# INPUTS:
+# --extract-method=regex: Use regex-based UMI extraction
+# --bc-pattern: Define the regex pattern for UMI extraction
+#   - (?P<discard_1>.*): Discard any leading sequence (non-greedy)
+#   - (?P<discard_2>ATTGCGCAATG){s<=2}: Match the adapter sequence with up to 2 mismatches
+#   - (?P<umi_1>.{8}): Capture the 8bp UMI sequence
+#   - (?P<discard_3>G{5}|G{3}): Discard the trailing poly-G sequence (5 or 3 Gs)
+# -I: Input FASTQ for Read 1
+# --read2-in: Input FASTQ for Read 2
+# -S: Output FASTQ for extracted Read 1
+# --read2-out: Output FASTQ for extracted Read 2
+# --filtered-out: Output FASTQ for discarded Read 1 (internal reads)
+# --filtered-out2: Output FASTQ for discarded Read 2 (internal reads)
+# -L: Log file for umi_tools extract
+
+# OUTPUTS:
+# - ${OUT_DIR}/extracted_R1.fastq.gz: FASTQ with extracted UMIs for Read 1
+# - ${OUT_DIR}/extracted_R2.fastq.gz: FASTQ with extracted UMIs for Read 2
+# - ${OUT_DIR}/internal_R1.fastq.gz: FASTQ with discarded internal reads for Read 1
+# - ${OUT_DIR}/internal_R2.fastq.gz: FASTQ with discarded internal reads for Read 2
+# - ${OUT_DIR}/umi_tools_extract.log: Log file for umi_tools extract
+
+# if [[ "$SKIP" -lt 1 ]]; then
+#     echo "Step 1: Running umi extraction..."
+#     echo ""
+#     umi_tools extract \
+#           --extract-method=regex \
+#           --bc-pattern="(?P<discard_1>.{0,10})(?P<discard_2>ATTGCGCAATG){s<=2}(?P<umi_1>.{8})(?P<discard_3>G{5}|G{3})" \
+#           -I ${R1_IN} \
+#           --read2-in=${R2_IN} \
+#           -S ${OUT_DIR}/extracted_R1.fastq.gz \
+#           --read2-out=${OUT_DIR}/extracted_R2.fastq.gz \
+#           --filtered-out=${OUT_DIR}/internal_R1.fastq.gz \
+#           --filtered-out2=${OUT_DIR}/internal_R2.fastq.gz \
+#           -L ${OUT_DIR}/umi_tools_extract.log
+#     if [[ "$STEP" -eq 1 ]]; then echo "Stopping after Step 1."; exit 0; fi
+# else
+#     echo "Skipping Step 1..."
+#     echo ""
+# fi
+
+# umi_tools dedup -I ${OUT_DIR}/umi_Aligned.sortedByCoord.out.bam \
+    #                 --output-stats=${OUT_DIR}/umi_dedup_stats \
+    #                 --paired \
+    #                 --chimeric-pairs=discard \
+    #                 --unpaired-reads=discard \
+    #                 -S ${OUT_DIR}/umi_deduplicated.bam \
+    #                 -L ${OUT_DIR}/umi_tools_dedup.log
