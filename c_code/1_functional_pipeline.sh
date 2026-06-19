@@ -28,7 +28,7 @@ set -e # Exit immediately if a command exits with a non-zero status
 THREADS=8 # Number of threads to use for parallel processing
 STAR_INDEX="d_data/refGenome/mouse_star_index/" # Path to STAR genome index directory
 VAR=$1 # Set VAR to the first command-line argument
-SKIP=0 # Set the step to skip to (e.g., SKIP=2 starts at Step 3)
+SKIP=2 # Set the step to skip to (e.g., SKIP=2 starts at Step 3)
 STEP=7 # and the step to stop after (1-7)
 
 # --- Directory Setup ---
@@ -106,6 +106,9 @@ if [[ "$SKIP" -lt 2 ]]; then
     echo ""
     fastp -i ${OUT_DIR}/extracted_R1.fastq.gz -I ${OUT_DIR}/extracted_R2.fastq.gz \
           -o ${OUT_DIR}/extracted-2_R1.fastq.gz -O ${OUT_DIR}/extracted-2_R2.fastq.gz \
+          --detect_adapter_for_pe \
+          --adapter_sequence=AGATCGGAAGAGCACACGTCTGAACTCCAGTCA \
+          --adapter_sequence_r2=AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT \
           --html ${OUT_DIR}/fastp_report.html --json ${OUT_DIR}/fastp_report.json \
           --thread ${THREADS} 2>${OUT_DIR}/fastp_run.log
     if [[ "$STEP" -eq 2 ]]; then echo "Stopping after Step 2."; exit 0; fi
