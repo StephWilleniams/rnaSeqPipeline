@@ -8,6 +8,8 @@ Ignore the specific directories where we store data and outputs
 
 c_sparklecode/
 d_data/
+d_data2/
+f_figures/
 o_outputs/
 n_notes/
 

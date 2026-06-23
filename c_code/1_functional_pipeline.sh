@@ -28,7 +28,7 @@ set -e # Exit immediately if a command exits with a non-zero status
 THREADS=8 # Number of threads to use for parallel processing
 STAR_INDEX="d_data/refGenome/mouse_star_index/" # Path to STAR genome index directory
 VAR=$1 # Set VAR to the first command-line argument
-SKIP=2 # Set the step to skip to (e.g., SKIP=2 starts at Step 3)
+SKIP=0 # Set the step to skip to (e.g., SKIP=2 starts at Step 3)
 STEP=7 # and the step to stop after (1-7)
 
 # --- Directory Setup ---
