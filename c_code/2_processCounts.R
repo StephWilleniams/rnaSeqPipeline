@@ -12,11 +12,13 @@
 # Input libraries -- assumes they are installed, if not use install.packages("NAME") or BiocManager::install("NAME")
 library(DESeq2)
 library(ggplot2)
+library(ggvenn)
 library(WGCNA)
 library(pheatmap)
 library(vegan)
 library(pairwiseAdonis)
 library(glue)
+library(scales)
 library(gtools)
 library(clusterProfiler)
 library(enrichplot)
@@ -24,21 +26,24 @@ library(org.Mm.eg.db)
 
 # Set the comparison treatments for differential expression analysis
 comparison_1 <- "lab_pull_down"
-comparison_2 <- "unlab_pull_down"
+comparison_2 <- "unlab_input"
 copy_threshold <- 10 # Number of gene copys required to be considered expressed in a sample
 condition_threshold <- 3 # Number of samples in a condition that must meet the copy threshold to be considered expressed in that condition
 PCA_gene_count <- 500 # Number of top variable genes to include in the PCA analysis
 network_size <- 100 # Number of top variable genes to include in the co-expression network analysis
+FC_thresh <- 0.0 # Log2 fold change threshold for differential expression analysis
+FCPadj <- 0.05 # Adjusted p-value threshold for differential expression analysis
 
 # Run analysis options
 PERFORM_DISPERSION_DIAGNOSTICS <- FALSE # Set to TRUE if you want to generate a dispersion diagnostic plot, may cause soft errors.
 MAKE_PCA_PLOT <- FALSE                  # Set to TRUE if you want to generate a PCA plot.
 DO_GROUP_COMPARISONS <- FALSE           # Set to TRUE if you want to perform PERMANOVA and Beta Diversity analysis.
 DO_DE_ANALYSIS <- TRUE                 # Set to TRUE if you want to perform differential expression analysis.
-PLOT_DE_ANALYSIS <- TRUE               # Set to TRUE if you want to generate a volcano plot for the differential expression analysis.
-PLOT_MA_ANALYSIS <- TRUE               # Set to TRUE if you want to generate an MA plot for the differential expression analysis.
+PLOT_DE_ANALYSIS <- FALSE               # Set to TRUE if you want to generate a volcano plot for the differential expression analysis.
+PLOT_MA_ANALYSIS <- FALSE               # Set to TRUE if you want to generate an MA plot for the differential expression analysis.
+DO_NETWORK_ANALYSIS <- FALSE            # Set to TRUE if you want to perform co-expression network analysis on the top variable genes.
 USE_LFC_SHRINK <- FALSE                 # Set to TRUE if you want to apply log fold change shrinkage to the DESeq2 results. This is optional and can help reduce noise in the results.
-DO_GO_ANALYSIS <- TRUE                 # Set to TRUE if you want to perform Gene Ontology (GO) enrichment analysis on the up- and down-regulated genes.
+DO_GO_ANALYSIS <- TRUE              # Set to TRUE if you want to perform Gene Ontology (GO) enrichment analysis on the up- and down-regulated genes.
 
 # ====================================================================
 # Phase 1a: Load Data & perform DESeq2 Setup
@@ -56,17 +61,22 @@ for (file in file_list) {
 row.names(count_matrix) <- count_matrix$Geneid
 count_matrix$Geneid <- NULL
 sample_info <- data.frame(
-    row.names = colnames(count_matrix),
+    # row.names = colnames(count_matrix),
     Condition1 = c(rep("unlab", 3), rep("lab", 3), rep("unlab", 3), rep("lab", 3)),
     Condition2 = c(rep("pull_down", 6), rep("input", 6))
 )
-sample_info$Group <- factor(paste0(sample_info$Condition1, "_", sample_info$Condition2))
+group_levels <- c("unlab_input", "lab_input", "unlab_pull_down", "lab_pull_down")
+sample_info$Group <- factor(
+    paste0(sample_info$Condition1, "_", sample_info$Condition2), 
+    levels = group_levels
+)
+row.names(sample_info) <- colnames(count_matrix)
 dds <- DESeqDataSetFromMatrix(countData = count_matrix,
                               colData = sample_info,
                               design = ~ Group)
 keep <- rowSums(counts(dds) >= copy_threshold) >= condition_threshold
 dds <- dds[keep, ]
-vsd <- vst(dds, blind = FALSE) # Variance Stabilizing Transformation (VST)
+vsd <- vst(dds, blind = FALSE) # XXX Variance Stabilizing Transformation (VST)
 
 # ====================================================================
 # Phase 1b: Dispersion Diagnostics (OPTIONAL)
@@ -203,22 +213,30 @@ if (DO_GROUP_COMPARISONS) {
 
 if (DO_DE_ANALYSIS) {
 
+    # dds$Group <- relevel(dds$Group, ref = "unlab_pull_down")
+
     # dds <- estimateSizeFactors(dds) # DEFAULT SETTING
     # sizeFactors(dds) <- rep(1, ncol(dds)) # IGNORE DATASET SIZE (NOT RECOMMENDED)
     dds <- DESeq(dds)
-    res_unshrunk <- results(dds, contrast = c("Group", comparison_1, comparison_2))
+    res_unshrunk <- results(dds, contrast = c("Group", comparison_1, comparison_2)) # XXX
 
     if (USE_LFC_SHRINK) {
+        # res <- lfcShrink(dds,
+        #                  contrast = c("Group", comparison_1, comparison_2),
+        #                  res = res_unshrunk,
+        #                  type = "ashr")
         res <- lfcShrink(dds,
-                         contrast = c("Group", comparison_1, comparison_2),
-                         res = res_unshrunk,
-                         type = "ashr") # type="ashr" allows you to use the exact same 'contrast' argument
+                         coef = resultsNames(dds)[4], # XXX
+                         type = "apeglm") # XXX
     } else {
         res <- res_unshrunk
     }
 
-    upregs <- res[which(res$log2FoldChange > 0.5 & res$padj < 0.05), ]
-    downregs <- res[which(res$log2FoldChange < -0.5 & res$padj < 0.05), ]
+    upregs <- res[which(res$log2FoldChange > FC_thresh & res$padj < FCPadj), ]
+    T2upregs <- res[which(res$log2FoldChange > FC_thresh & res$pvalue < FCPadj), ]
+
+    downregs <- res[which(res$log2FoldChange < -FC_thresh & res$padj < FCPadj), ]
+    T2downregs <- res[which(res$log2FoldChange < -FC_thresh & res$pvalue < FCPadj), ]
 
     print(paste("Number of Up-regulated Genes:", nrow(upregs)))
     print(paste("Number of Down-regulated Genes:", nrow(downregs)))
@@ -279,10 +297,62 @@ if (DO_DE_ANALYSIS && PLOT_MA_ANALYSIS) {
 }
 
 # ====================================================================
+# Phase 3d: Expressed gene overlap (Venn Diagram)
+# ====================================================================
+
+# # 1. Define file paths and readable column headers
+# files <- list(
+#     "LP_vs_UP"  = "o_outputs/processed_data/DE_results/DESeq2_upreg-Results_lab_pull_down_vs_unlab_pull_down.csv",
+#     "LP_vs_LI"  = "o_outputs/processed_data/DE_results/DESeq2_upreg-Results_lab_pull_down_vs_lab_input.csv",
+#     "LP_vs_UI"  = "o_outputs/processed_data/DE_results/DESeq2_upreg-Results_lab_pull_down_vs_unlab_input.csv",
+#     "UP_vs_LI"  = "o_outputs/processed_data/DE_results/DESeq2_upreg-Results_unlab_pull_down_vs_lab_input.csv",
+#     "UP_vs_UI"  = "o_outputs/processed_data/DE_results/DESeq2_upreg-Results_unlab_pull_down_vs_unlab_input.csv",
+#     "LI_vs_UI"  = "o_outputs/processed_data/DE_results/DESeq2_upreg-Results_lab_input_vs_unlab_input.csv"
+# )
+
+# # 2. Read all files and extract the Gene IDs (Column 'X') into a named list
+# gene_list <- lapply(files, function(f) {
+#     if (file.exists(f)) {
+#         return(read.csv(f, stringsAsFactors = FALSE)$X)
+#     } else {
+#         warning(paste("File not found:", f))
+#         return(character(0))
+#     }
+# })
+
+# # 3. Combine all lists to find every unique gene across ALL 5 datasets
+# all_unique_genes <- unique(unlist(gene_list))
+
+# # 4. Vectorised alternative to the loop: construct a logical matrix (TRUE/FALSE)
+# # For each file's gene set, check if the master unique genes are present
+# presence_matrix <- sapply(gene_list, function(g) all_unique_genes %in% g)
+
+# # 5. Turn it into a data frame and keep your Gene IDs as the row names
+# overlap_df <- as.data.frame(presence_matrix)
+# row.names(overlap_df) <- all_unique_genes
+
+# heatmap_mat <- as.matrix(overlap_df) + 0
+
+# gene_heatmap <- pheatmap(
+#     heatmap_mat,
+#     cluster_rows = TRUE,            # Clusters similar gene profiles together
+#     cluster_cols = FALSE,           # Keeps your 5 comparison columns in their original order
+#     show_rownames = FALSE,          # Hides individual gene IDs for visual clarity
+#     show_colnames = TRUE,           # Displays your comparison names at the bottom
+#     color = c("#EBF2FA", "#0B4F6C"), # Light grey/blue for Absent (0), Deep Navy for Present (1)
+#     legend_breaks = c(0, 1),
+#     legend_labels = c("Absent", "Present"),
+#     main = "Gene Up-regulation Footprint Across Comparisons",
+#     filename = "f_figures/Gene_Overlap_Heatmap_pheatmap.png",
+#     width = 6,
+#     height = 8
+# )
+
+# ====================================================================
 # Phase 4: Network Analysis (Gene Correlation)
 # ====================================================================
 
-if (DO_DE_ANALYSIS) {
+if (DO_NETWORK_ANALYSIS) {
 
     norm_counts <- assay(vsd)
     dat_expr <- t(norm_counts)
@@ -304,9 +374,11 @@ if (DO_DE_ANALYSIS) {
 
 if (DO_DE_ANALYSIS && DO_GO_ANALYSIS) {
 
-    up_genes <- rownames(upregs)
-    down_genes <- rownames(downregs)
+    up_genes <- c(rownames(upregs), rownames(T2upregs))
+    down_genes <- c(rownames(downregs), rownames(T2downregs))
+
     universe_genes <- rownames(dds)
+
     org_db <- org.Mm.eg.db
     id_type <- "SYMBOL"
 
@@ -330,8 +402,27 @@ if (DO_DE_ANALYSIS && DO_GO_ANALYSIS) {
                         qvalueCutoff  = 0.2,
                         readable      = TRUE)
 
-    write.csv(as.data.frame(go_up), file = glue("o_outputs/processed_data/GO_results/GO_Enrichment_UP_{comparison_1}_vs_{comparison_2}.csv"))
-    write.csv(as.data.frame(go_down), file = glue("o_outputs/processed_data/GO_results/GO_Enrichment_DOWN_{comparison_1}_vs_{comparison_2}.csv"))
+    up_results <- as.data.frame(go_up)
+    down_results <- as.data.frame(go_down)
+
+    print("________")
+
+    cilia_terms <- up_results[grep("cili", up_results$Description, ignore.case = TRUE), ] # um assembly|cilium organization
+    print(paste0("Number of cilium-related terms found: ", nrow(cilia_terms)))
+
+    cilia_genes_list <- cilia_terms$geneID |>
+        paste(collapse = "/") |>        # Combine if there are multiple matching rows
+        strsplit(split = "/") |>        # Split by the slash
+        unlist() |>                     # Flatten into a vector
+        unique() |>                     # Remove duplicates between the two terms
+        sort()                          # Alphabetize
+
+    # Print the total count and the final list of genes to the console
+    message("\nFound ", length(cilia_genes_list), " unique genes matching cilia terms:")
+    print(cilia_genes_list)
+
+    write.csv(up_results, file = glue("o_outputs/processed_data/GO_results/GO_Enrichment_UP_{comparison_1}_vs_{comparison_2}.csv"))
+    write.csv(down_results, file = glue("o_outputs/processed_data/GO_results/GO_Enrichment_DOWN_{comparison_1}_vs_{comparison_2}.csv"))
 } else if (!DO_DE_ANALYSIS && DO_GO_ANALYSIS) {
     print("Differential expression analysis was not performed, no GO analysis can be generated.")
 }
@@ -345,17 +436,15 @@ if (DO_DE_ANALYSIS && DO_GO_ANALYSIS && PLOT_DE_ANALYSIS) {
     if (!is.null(go_up) && nrow(go_up) > 0) {
 
         dot_up <- dotplot(go_up, showCategory = 20) +
-            ggtitle(glue("Top Biological Processes: Up-regulated in {comparison_1}"))
+            ggtitle(glue("Top Biological Processes: Up-regulated in {comparison_1}")) +
+            scale_y_discrete(labels = label_wrap(30)) + # Automatically wraps text at 30 characters
+            theme(
+                axis.text.y = element_text(size = 10), # Optional: slightly shrink the font if names are huge
+                axis.title.y = element_blank()         # Optional: removes the redundant "Description" axis label
+            )
 
         ggsave(filename = glue("f_figures/GO/GO_Dotplot_UP_{comparison_1}_vs_{comparison_2}.png"),
-               plot = dot_up, width = 9, height = 7, dpi = 300)
-
-        # # Barplot: standard enrichment visual
-        # bar_up <- barplot(go_up) +
-        #     ggtitle(paste0("Top Biological Processes: Up-regulated in ", comparison_1))
-
-        # ggsave(filename = glue("f_figures/GO_Barplot_UP_{comparison_1}_vs_{comparison_2}.png"),
-        #        plot = bar_up, width = 9, height = 7, dpi = 300)
+               plot = dot_up, width = 10, height = 8, dpi = 300) # Slightly bumped width/height to give wrapped text room
     }
 
     if (!is.null(go_down) && nrow(go_down) > 0) {
@@ -365,12 +454,6 @@ if (DO_DE_ANALYSIS && DO_GO_ANALYSIS && PLOT_DE_ANALYSIS) {
 
         ggsave(filename = glue("f_figures/GO/GO_Dotplot_DOWN_{comparison_1}_vs_{comparison_2}.png"),
                plot = dot_down, width = 9, height = 7, dpi = 300)
-
-        # bar_down <- barplot(go_down, showCategory = 20) +
-        #     ggtitle(glue("Top Biological Processes: Down-regulated in {comparison_1}"))
-
-        # ggsave(filename = glue("f_figures/GO_Barplot_DOWN_{comparison_1}_vs_{comparison_2}.png"),
-        #        plot = bar_down, width = 9, height = 7, dpi = 300)
     }
 } else if ((!DO_DE_ANALYSIS && DO_GO_ANALYSIS && PLOT_DE_ANALYSIS) || (DO_DE_ANALYSIS && !DO_GO_ANALYSIS && PLOT_DE_ANALYSIS)) {
     print("Required analysis was not performed, no GO plots can be generated.")

@@ -31,4 +31,4 @@ for file in o_outputs/sample_*/extracted-2_R1.fastq.gz; do
     mv o_outputs/qc_reports_trimmed/extracted-2_R1_fastqc.zip o_outputs/qc_reports_trimmed/${sample_name}_extracted-2_R1_fastqc.zip
 done
 
-multiqc -o o_outputs/qc_reports_trimmed_multi/ o_outputs/qc_reports_trimmed/
+multiqc --fn_as_s_name --force -o o_outputs/qc_reports_trimmed_multi/ o_outputs/qc_reports_trimmed/
