@@ -6,7 +6,7 @@ RNA-Seq Pipeline .gitignore
 
 Ignore the specific directories where we store data and outputs
 
-c_sparklecode/
+a_AI_tools/
 d_data/
 d_data2/
 f_figures/
@@ -62,6 +62,7 @@ gene_counts.txt.summary
 
 7. OS Generated Files (Mac/Linux)
 
+.env
 .DS_Store
 .DS_Store?
 ._*
